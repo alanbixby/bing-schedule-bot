@@ -62,11 +62,49 @@ const CourseSearchTemplate: ICourseSearch = {
   end_ap: 'a',
 }
 
-const fetchByAbbr = async () => {
-  const { body } = await got.post(
-    `https://ssb.cc.binghamton.edu/banner/bwckschd.p_get_crse_unsec?term_in=202190&sel_subj=dummy&sel_day=dummy&sel_schd=dummy&sel_insm=dummy&sel_camp=dummy&sel_levl=dummy&sel_sess=dummy&sel_instr=dummy&sel_ptrm=dummy&sel_attr=dummy&sc_sel_attr=dummy&sel_subj=CS&sel_crse=375&sel_title=&sel_schd=%25&sel_insm=%25&sel_from_cred=&sel_to_cred=&sel_levl=%25&sel_ptrm=%25&sel_attr=%25&sc_sel_attr=%25&begin_hh=0&begin_mi=0&begin_ap=a&end_hh=0&end_mi=0&end_ap=a`
+const fetchByAbbrString = async (
+  courseName: string,
+  semester: SemesterCodes = assumeTargetSemester(),
+  year: number = new Date().getFullYear()
+) => {
+  const [subject, number] = courseName.trim().split(/ +/)
+  if (isNaN(+number)) {
+    throw new TypeError(
+      `Could not parse a course number from the abbreviation string. | ${courseName} : [${subject}, ${number}]`
+    )
+  }
+  return fetchByAbbr(subject, +number, semester, year)
+}
+
+const fetchByAbbr = async (
+  subject: string,
+  number: number,
+  semester: SemesterCodes = assumeTargetSemester(),
+  year: number = new Date().getFullYear()
+) => {
+  const url = `https://ssb.cc.binghamton.edu/banner/bwckschd.p_get_crse_unsec?term_in=${year}${semester}0&sel_subj=dummy&sel_day=dummy&sel_schd=dummy&sel_insm=dummy&sel_camp=dummy&sel_levl=dummy&sel_sess=dummy&sel_instr=dummy&sel_ptrm=dummy&sel_attr=dummy&sc_sel_attr=dummy&sel_subj=${subject}&sel_crse=${number}&sel_title=&sel_schd=%25&sel_insm=%25&sel_from_cred=&sel_to_cred=&sel_levl=%25&sel_ptrm=%25&sel_attr=%25&sc_sel_attr=%25&begin_hh=0&begin_mi=0&begin_ap=a&end_hh=0&end_mi=0&end_ap=a`
+  const { body } = await got.post(url)
+  /// console.log(body)
+  const html = parse(body)
+  // const headers = html.querySelectorAll('tr>th.ddtitle')
+  // const obj = html.querySelectorAll(
+  //   'table.datadisplaytable>tr>th.ddheader[scope="col"]'
+  // )
+  const sectionTables = html.querySelectorAll(
+    'td.dddefault>table.datadisplaytable'
   )
-  console.log(body)
+
+  const data = []
+  for (const table of sectionTables) {
+    const keys = table.querySelectorAll('tr>th.ddheader[scope="col"]').map(t=>t.text)
+    const values = table.querySelectorAll('tr>td.dddefault').map(t=>t.text)
+    data.push(values.reduce((result: { [key: string]: any }, field, index) => {
+      result[keys[index]] = field
+      return result
+    }, {}))
+  }
+
+  console.log(data)
 }
 
 const fetchByCRN = async (
@@ -99,12 +137,6 @@ const fetchByCRN = async (
 
   const capacity = +html.querySelector('td.dddefault:nth-child(2)').textContent // TODO: Courses may have more than one capacity due to cross-listings - see CRN 10010
   const remaining = +html.querySelector('td.dddefault:nth-child(3)').textContent
-  console.log(
-    `[${abbreviation}] ${name}\n` +
-      `Section ${section} : ${courseRegistrationNumber}\n` +
-      `${remaining} of ${capacity} seats remaining\n` +
-      `https://ssb.cc.binghamton.edu/banner/bwckschd.p_disp_detail_sched?term_in=${year}${semester}0&crn_in=${crn}`
-  )
 
   const semesterSeason =
     SemesterCodes[+semester].charAt(0).toUpperCase() +
@@ -210,16 +242,5 @@ function assumeTargetSemester(): SemesterCodes {
 }
 
 ;(async () => {
-  // const params = new URLSearchParams(
-  //   'term_in=202190&sel_subj=dummy&sel_day=dummy&sel_schd=dummy&sel_insm=dummy&sel_camp=dummy&sel_levl=dummy&sel_sess=dummy&sel_instr=dummy&sel_ptrm=dummy&sel_attr=dummy&sc_sel_attr=dummy&sel_subj=CS&sel_crse=375&sel_title=&sel_schd=%25&sel_insm=%25&sel_from_cred=&sel_to_cred=&sel_levl=%25&sel_ptrm=%25&sel_attr=%25&sc_sel_attr=%25&begin_hh=0&begin_mi=0&begin_ap=a&end_hh=0&end_mi=0&end_ap=a'
-  // )
-  // const result: { [key: string]: string } = {}
-  // for (const [key, val] of params) {
-  //   result[key] = val
-  // }
-
-  // console.log(result)
-  
-  fetchByAbbr()
-  // console.log(await fetchByCRN(32355))
+  await fetchByAbbrString('CS 240')
 })()
