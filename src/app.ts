@@ -1,6 +1,6 @@
-import got, { OptionsOfTextResponseBody } from 'got'
+import got from 'got'
 import { parse } from 'node-html-parser'
-import { URLSearchParams } from 'url'
+import { traceDeprecation } from 'process'
 
 enum SemesterCodes {
   'winter' = 1, // Opens Early November - given super low priority
@@ -84,24 +84,46 @@ const fetchByAbbr = async (
 ) => {
   const url = `https://ssb.cc.binghamton.edu/banner/bwckschd.p_get_crse_unsec?term_in=${year}${semester}0&sel_subj=dummy&sel_day=dummy&sel_schd=dummy&sel_insm=dummy&sel_camp=dummy&sel_levl=dummy&sel_sess=dummy&sel_instr=dummy&sel_ptrm=dummy&sel_attr=dummy&sc_sel_attr=dummy&sel_subj=${subject}&sel_crse=${number}&sel_title=&sel_schd=%25&sel_insm=%25&sel_from_cred=&sel_to_cred=&sel_levl=%25&sel_ptrm=%25&sel_attr=%25&sc_sel_attr=%25&begin_hh=0&begin_mi=0&begin_ap=a&end_hh=0&end_mi=0&end_ap=a`
   const { body } = await got.post(url)
-  /// console.log(body)
   const html = parse(body)
-  // const headers = html.querySelectorAll('tr>th.ddtitle')
-  // const obj = html.querySelectorAll(
-  //   'table.datadisplaytable>tr>th.ddheader[scope="col"]'
-  // )
+  const error = html
+    .querySelectorAll(
+      'table[summary="This layout table holds message information"]>tr>td.pldefault'
+    )
+    ?.map((t) => t.text.toLowerCase())
+
+  const semesterSeason =
+    SemesterCodes[+semester].charAt(0).toUpperCase() +
+    SemesterCodes[+semester].slice(1)
+
+  if (error.some((t) => t.includes('no classes were found'))) {
+    // No classes were found that meet your search criteria
+    throw new TypeError(
+      `An invalid class abbreviation or semester was provided. | ${subject} ${number}: ${semesterSeason} ${year}`
+    )
+  }
+
+  const headers = html.querySelectorAll('tr>th.ddtitle')
+
+  console.log(headers.map((t) => extractCourseInformation(t.text)))
+  return
   const sectionTables = html.querySelectorAll(
     'td.dddefault>table.datadisplaytable'
   )
 
   const data = []
   for (const table of sectionTables) {
-    const keys = table.querySelectorAll('tr>th.ddheader[scope="col"]').map(t=>t.text)
-    const values = table.querySelectorAll('tr>td.dddefault').map(t=>t.text)
-    data.push(values.reduce((result: { [key: string]: any }, field, index) => {
-      result[keys[index]] = field
-      return result
-    }, {}))
+    const tableKeys = table
+      .querySelectorAll('tr>th.ddheader[scope="col"]')
+      .map((t) => t.text)
+    const tableValues = table
+      .querySelectorAll('tr>td.dddefault')
+      .map((t) => t.text)
+    data.push(
+      tableValues.reduce((result: { [key: string]: any }, field, index) => {
+        result[tableKeys[index]] = field
+        return result
+      }, {})
+    )
   }
 
   console.log(data)
@@ -128,7 +150,9 @@ const fetchByCRN = async (
 
   const {
     abbreviation,
+    rawName,
     name,
+    rawSection,
     section,
     subject,
     number,
@@ -144,8 +168,10 @@ const fetchByCRN = async (
 
   return {
     crn,
+    rawName,
     name,
     abbreviation,
+    rawSection,
     section,
     capacity,
     remaining,
@@ -158,9 +184,11 @@ const fetchByCRN = async (
 }
 
 interface CourseInfoStringData {
+  rawName: string
   name: string
   abbreviation: string
-  section: string
+  rawSection: string
+  section: SectionData
   subject: string
   number: number
   crn: number
@@ -181,10 +209,10 @@ function extractCourseInformation(
   const courseInformation = courseInfoString.split(' - ') // Will always have at least 4 elements; CRN check protects against edge cases
 
   // Uses pop() instead of [a, b, c] syntax due to courses with " - " in their names
-  const section = courseInformation.pop() as string
+  const rawSection = courseInformation.pop() as string
   const abbreviation = courseInformation.pop() as string
   const registrationNumber = courseInformation.pop() as string
-  const name = courseInformation.join(' - ')
+  const rawName = courseInformation.join(' - ')
 
   // Skip validation if no expectedCrn is provided
   if (expectedCrn) {
@@ -218,10 +246,15 @@ function extractCourseInformation(
   const subject = nameSearchTerms[0]
   const number = +nameSearchTerms[1]
 
+  const section = extractSectionData(rawSection)
+  const { processedString: name } = extractLabeledString(rawName)
+
   return {
     abbreviation,
+    rawName,
     name,
     number,
+    rawSection,
     section,
     subject,
     crn: +registrationNumber,
@@ -239,6 +272,56 @@ function assumeTargetSemester(): SemesterCodes {
   ) // Remove strings since TS mirrors the enum
   return (semesterCodes.find((monthCode) => monthCode >= currMonthCode) ||
     semesterCodes[1]) as number
+}
+
+interface SectionData {
+  letter: string
+  number: number
+  name: string
+}
+
+/**
+ *
+ */
+function extractSectionData(sectionStr: string): SectionData {
+  sectionStr = sectionStr.trim()
+  const letter = sectionStr.match(/[A-Za-z]+/)
+  const number = sectionStr.match(/\d+/)
+
+  if (!letter?.[0] || !number?.[0]) {
+    throw new Error(
+      `A web scraping error occurred, could not identify the section. | ${sectionStr} : [${letter}, ${number}]`
+    )
+  }
+
+  return {
+    letter: letter[0],
+    number: +number[0],
+    name: `${letter}${number}`,
+  }
+}
+
+interface LabeledStringData {
+  rawString: string
+  processedString: string
+  label?: string
+}
+
+function extractLabeledString(rawString: string): LabeledStringData {
+  const processedString = rawString.replaceAll(/\(([^]+)\)/g, '').trim()
+  const label = rawString.match(/(?<=\()(.*?)(?=\))/)?.[0]
+
+  if (!label && processedString !== rawString) {
+    throw new Error(
+      `A web scraping error occurred, raw and processed string did not match, but no label was found. | ${rawString} : ${processedString}]`
+    )
+  }
+
+  return {
+    rawString,
+    processedString,
+    label,
+  }
 }
 
 ;(async () => {
